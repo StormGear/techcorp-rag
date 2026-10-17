@@ -86,11 +86,49 @@ company-rag/
 
 `.env` and `chroma_db/` are gitignored so keys and local vectors stay off the repo.
 
-## Run with Docker (local)
+## Run with Docker
 
-The image includes the Flask app, `techcorp-docs/`, Python dependencies, and the MiniLM embedding model. Groq credentials stay out of the image — pass them at run time.
+The Docker image includes the Flask app, `techcorp-docs/`, Python dependencies, and the baked-in MiniLM embedding model (`all-MiniLM-L6-v2`). Groq credentials stay out of the image — pass them at run time.
 
-1. Create `.env` from the example (same keys as the venv setup above).
+### Option 1: Pull from GitHub Container Registry (Quickest)
+
+You can run the pre-built image directly without cloning the repository or waiting for PyTorch/dependencies to build.
+
+1. **Pull the image from GHCR:**
+
+   ```bash
+   docker pull ghcr.io/stormgear/techcorp-rag:v0
+   ```
+   
+2. **Run the container:**
+
+   Pass your Groq API key via `-e` or `--env-file .env`:
+
+   ```bash
+   docker run --rm --name techcorp-rag \
+     -p 5252:5252 \
+     -e GROQ_API_KEY="your_groq_api_key_here" \
+     -v techcorp-chroma:/app/rag-assistant/chroma_db \
+     ghcr.io/stormgear/techcorp-rag:v0
+   ```
+
+   *(On Apple Silicon / ARM64 Macs, Docker Desktop will emulate AMD64 automatically, or you can pass `--platform linux/amd64` if prompted).*
+
+3. **Access the assistant:**
+
+   Open [http://127.0.0.1:5252](http://127.0.0.1:5252) in your browser. The named volume (`techcorp-chroma`) preserves the ChromaDB index between runs.
+
+---
+
+### Option 2: Build and run locally
+
+If you want to modify code or docs and test local changes:
+
+1. Create `.env` from the example (same keys as the venv setup above):
+
+   ```bash
+   cp .env.example .env
+   ```
 
 2. From the **repository root**, build the image:
 
@@ -98,9 +136,9 @@ The image includes the Flask app, `techcorp-docs/`, Python dependencies, and the
    docker build -t techcorp-rag:local .
    ```
 
-   The first build is slow: it installs PyTorch/sentence-transformers and downloads `all-MiniLM-L6-v2`. Later builds reuse those layers unless `requirements.txt` or the Dockerfile change.
+   The first build is slower because it installs PyTorch/sentence-transformers and bakes `all-MiniLM-L6-v2` into the image layer.
 
-3. Run a container, forwarding port 5252 and injecting env vars:
+3. Run the container:
 
    ```bash
    docker run --rm --name techcorp-rag \
@@ -110,15 +148,15 @@ The image includes the Flask app, `techcorp-docs/`, Python dependencies, and the
      techcorp-rag:local
    ```
 
-   Open [http://127.0.0.1:5252](http://127.0.0.1:5252). The named volume keeps the Chroma index across restarts; delete it (`docker volume rm techcorp-chroma`) if you want a fresh ingest of `techcorp-docs/`.
+   Open [http://127.0.0.1:5252](http://127.0.0.1:5252). To start completely fresh with indexing, remove the volume (`docker volume rm techcorp-chroma`).
 
-Alternatively, from the repo root:
+Alternatively, use Docker Compose from the repo root:
 
 ```bash
 docker compose up --build
 ```
 
-That uses `docker-compose.yml` (image tag `techcorp-rag:local`, port 5252, `.env`, and a `chroma-data` volume). Stop with `Ctrl+C`, or `docker compose down` to remove the container (the volume is kept until `docker compose down -v`).
+That uses [docker-compose.yml](file:///Users/papakofi/Downloads/company-rag/docker-compose.yml) (port 5252, `.env`, and a `chroma-data` volume). Stop with `Ctrl+C`, or `docker compose down` (add `-v` if you also want to remove stored vectors).
 
 ## Try asking
 
