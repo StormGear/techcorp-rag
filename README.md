@@ -52,6 +52,8 @@ company-rag/
 │   ├── templates/chat.html
 │   └── static/
 ├── rag-project/requirements.txt
+├── Dockerfile
+├── docker-compose.yml
 └── .env.example
 ```
 
@@ -83,6 +85,40 @@ company-rag/
    First run downloads the embedding model (~90MB) and indexes `techcorp-docs/`. Open [http://127.0.0.1:5252](http://127.0.0.1:5252).
 
 `.env` and `chroma_db/` are gitignored so keys and local vectors stay off the repo.
+
+## Run with Docker (local)
+
+The image includes the Flask app, `techcorp-docs/`, Python dependencies, and the MiniLM embedding model. Groq credentials stay out of the image — pass them at run time.
+
+1. Create `.env` from the example (same keys as the venv setup above).
+
+2. From the **repository root**, build the image:
+
+   ```bash
+   docker build -t techcorp-rag:local .
+   ```
+
+   The first build is slow: it installs PyTorch/sentence-transformers and downloads `all-MiniLM-L6-v2`. Later builds reuse those layers unless `requirements.txt` or the Dockerfile change.
+
+3. Run a container, forwarding port 5252 and injecting env vars:
+
+   ```bash
+   docker run --rm --name techcorp-rag \
+     -p 5252:5252 \
+     --env-file .env \
+     -v techcorp-chroma:/app/rag-assistant/chroma_db \
+     techcorp-rag:local
+   ```
+
+   Open [http://127.0.0.1:5252](http://127.0.0.1:5252). The named volume keeps the Chroma index across restarts; delete it (`docker volume rm techcorp-chroma`) if you want a fresh ingest of `techcorp-docs/`.
+
+Alternatively, from the repo root:
+
+```bash
+docker compose up --build
+```
+
+That uses `docker-compose.yml` (image tag `techcorp-rag:local`, port 5252, `.env`, and a `chroma-data` volume). Stop with `Ctrl+C`, or `docker compose down` to remove the container (the volume is kept until `docker compose down -v`).
 
 ## Try asking
 

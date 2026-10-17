@@ -3,7 +3,6 @@ Chat Engine - Handles the RAG pipeline and response generation
 """
 
 
-from transformers.models.auto import modeling_flax_auto
 import os
 import dotenv
 dotenv.load_dotenv()
