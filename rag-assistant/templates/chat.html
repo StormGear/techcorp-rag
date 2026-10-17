@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <title>TechCorp AI Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M5 12h6M8 9v6M14 8h5M16.5 6v4M14 16h5M16.5 14v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <div class="brand-copy">
+                    <h1>TechCorp Assistant</h1>
+                    <p>Policies, products, and company knowledge</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="status-pill" title="Connection status">
+                    <span class="status-indicator" id="status-dot"></span>
+                    <span id="status-text">Ready</span>
+                </div>
+                <button type="button" class="icon-button" id="clear-button" title="Start a new chat">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>New</span>
+                </button>
+            </div>
+        </header>
+
+        <main class="chat-shell">
+            <div class="chat-messages" id="chat-messages">
+                <section class="welcome" id="welcome" aria-label="Getting started">
+                    <div class="welcome-badge">Internal knowledge assistant</div>
+                    <h2>How can I help today?</h2>
+                    <p>Ask about employee policies, CloudSync Pro, DataVault, meeting notes, or customer support.</p>
+                    <div class="suggestion-grid" id="suggestion-grid">
+                        <button type="button" class="suggestion" data-query="What is our remote work policy?">Remote work policy</button>
+                        <button type="button" class="suggestion" data-query="What are the key features of CloudSync Pro?">CloudSync Pro features</button>
+                        <button type="button" class="suggestion" data-query="Summarize recent meeting decisions.">Meeting decisions</button>
+                        <button type="button" class="suggestion" data-query="How do we handle customer support FAQs?">Customer FAQs</button>
+                    </div>
+                </section>
+            </div>
+
+            <form class="composer" id="chat-form" autocomplete="off">
+                <label class="sr-only" for="chat-input">Message</label>
+                <div class="composer-box">
+                    <textarea
+                        id="chat-input"
+                        rows="1"
+                        placeholder="Ask about policies, products, or updates…"
+                        enterkeyhint="send"
+                    ></textarea>
+                    <button type="submit" id="send-button" title="Send message" aria-label="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            <path d="M22 2L11 13M22 2L15 22L11 13L2 9L22 2Z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
+                <p class="composer-hint">Enter to send · Shift + Enter for a new line</p>
+            </form>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+</body>
+</html>
