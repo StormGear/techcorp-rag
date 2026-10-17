@@ -4,8 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/app/.cache/huggingface \
-    TRANSFORMERS_CACHE=/app/.cache/huggingface \
-    HF_HUB_DISABLE_TELEMETRY=1
+    TRANSFORMERS_CACHE=/app/.cache/huggingface
 
 WORKDIR /app
 

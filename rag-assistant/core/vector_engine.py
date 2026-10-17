@@ -20,7 +20,6 @@ class VectorEngine:
         )
         
         # Initialize embedding model
-        os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
         os.environ['TRANSFORMERS_OFFLINE'] = '0'  # Allow downloading
         
         print("[VectorEngine] Loading embedding model...")
