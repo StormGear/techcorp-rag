@@ -67,7 +67,26 @@ company-rag/
 
    Set `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `ALLOWED_MODELS`, and your Neon `DATABASE_URL` (e.g. `postgresql://user:password@ep-xxxx.neon.tech/neondb?sslmode=require`).
 
-2. Create a virtualenv and install dependencies (from the repo root):
+2. Set up the PostgreSQL database (`pgvector`):
+
+   Run the following SQL in your PostgreSQL / Neon database (e.g. via the Neon SQL Console or `psql`) to enable vector support, create the chunks table, and add an HNSW index for fast similarity search:
+
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+
+   CREATE TABLE techcorp_chunks (
+       id TEXT PRIMARY KEY,
+       text TEXT NOT NULL,
+       metadata JSONB,
+       embedding vector(384) -- 384 for all-MiniLM-L6-v2, 1536 for OpenAI text-embedding-3-small
+   );
+   -- HNSW index for fast cosine distance search:
+   CREATE INDEX ON techcorp_chunks USING hnsw (embedding vector_cosine_ops);
+   ```
+
+   > **Note:** If you are using OpenAI's `text-embedding-3-small` (the default in this project), set the column dimension to `vector(1536)` (or `vector(384)` if using `all-MiniLM-L6-v2`).
+
+3. Create a virtualenv and install dependencies (from the repo root):
 
    ```bash
    cd rag-assistant
@@ -76,7 +95,7 @@ company-rag/
    pip install -r ../rag-project/requirements.txt
    ```
 
-3. Run the app:
+4. Run the app:
 
    ```bash
    python app.py
@@ -143,11 +162,10 @@ If you want to modify code or docs and test local changes:
    docker run --rm --name techcorp-rag \
      -p 5252:5252 \
      --env-file .env \
-     -v techcorp-chroma:/app/rag-assistant/chroma_db \
      techcorp-rag:local
    ```
 
-   Open [http://127.0.0.1:5252](http://127.0.0.1:5252). To start completely fresh with indexing, remove the volume (`docker volume rm techcorp-chroma`).
+   Open [http://127.0.0.1:5252](http://127.0.0.1:5252).
 
 Alternatively, use Docker Compose from the repo root:
 
@@ -155,7 +173,7 @@ Alternatively, use Docker Compose from the repo root:
 docker compose up --build
 ```
 
-That uses [docker-compose.yml](file:///Users/papakofi/Downloads/company-rag/docker-compose.yml) (port 5252, `.env`, and a `chroma-data` volume). Stop with `Ctrl+C`, or `docker compose down` (add `-v` if you also want to remove stored vectors).
+That uses [docker-compose.yml](file:///Users/papakofi/Downloads/company-rag/docker-compose.yml) (port 5252 and `.env`). Stop with `Ctrl+C`, or `docker compose down`.
 
 ## Try asking
 
