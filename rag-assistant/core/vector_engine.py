@@ -1,150 +1,244 @@
 """
-Vector Engine - Manages vector database operations using ChromaDB
+Vector Engine - Manages vector database operations using PostgreSQL + pgvector (Neon)
+and OpenRouter (openai/text-embedding-3-small) for embeddings.
 """
 
-import chromadb
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+import os
+from datetime import datetime
 from typing import List, Dict, Any
 import numpy as np
-from datetime import datetime
-import os
+import psycopg2
+from psycopg2.extras import Json, RealDictCursor
+from pgvector.psycopg2 import register_vector
+from openai import OpenAI
+import dotenv
+
+dotenv.load_dotenv()
+
 
 class VectorEngine:
-    def __init__(self, collection_name: str = "techcorp_docs"):
-        print("[VectorEngine] Initializing ChromaDB...")
-        # Initialize ChromaDB client with persistent storage
-        self.client = chromadb.PersistentClient(
-            path="./chroma_db",
-            settings=Settings(anonymized_telemetry=False)
+    def __init__(self, collection_name: str = "techcorp_chunks"):
+        self.table_name = collection_name.replace("-", "_")
+        self.db_url = os.environ.get("DATABASE_URL")
+        self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+        if not self.db_url:
+            raise ValueError(
+                "DATABASE_URL environment variable is not set. "
+                "Please configure your Neon PostgreSQL connection string in .env"
+            )
+
+        if not self.openrouter_api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY environment variable is not set. "
+                "Please configure your OpenRouter API key in .env"
+            )
+
+        print("[VectorEngine] Initializing OpenRouter embedding client...")
+        import httpx
+        self.embedding_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=self.openrouter_api_key,
+            http_client=httpx.Client()
         )
-        
-        # Initialize embedding model
-        os.environ['TRANSFORMERS_OFFLINE'] = '0'  # Allow downloading
-        
-        print("[VectorEngine] Loading embedding model...")
-        print("[VectorEngine] Note: First-time download may take 2-3 minutes (~90MB)")
-        
-        try:
-            # Try to load model with progress indication
-            import sys
-            sys.stdout.flush()
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-            print("[VectorEngine] Model loaded successfully!")
-        except Exception as e:
-            print(f"[VectorEngine] Error loading model: {e}")
-            print("[VectorEngine] Attempting offline mode...")
-            # Try to work offline if model exists
-            os.environ['TRANSFORMERS_OFFLINE'] = '1'
-            import warnings
-            warnings.filterwarnings('ignore')
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-        
-        # Get or create collection
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-        
+        self.embedding_model = "openai/text-embedding-3-small"
+        self.embedding_dim = 1536
+
+        print("[VectorEngine] Initializing PostgreSQL (Neon) with pgvector...")
+        self._init_db()
         self.last_updated = datetime.now()
-    
+
+    def _get_connection(self):
+        """Create a new PostgreSQL connection and register pgvector types"""
+        conn = psycopg2.connect(self.db_url)
+        register_vector(conn)
+        return conn
+
+    def _create_embedding(self, text: str) -> List[float]:
+        """Generate embedding vector using OpenRouter API (text-embedding-3-small)"""
+        clean_text = text.replace("\n", " ")
+        response = self.embedding_client.embeddings.create(
+            model=self.embedding_model,
+            input=clean_text
+        )
+        return response.data[0].embedding
+
+    def _init_db(self):
+        """Ensure pgvector extension, table, and index exist in Neon with 1536 dimensions"""
+        # Step 1: Ensure extension is enabled
+        with psycopg2.connect(self.db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            conn.commit()
+
+        # Step 2: Check for table dimension and create if needed
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check column dimension if table already exists
+                cur.execute("""
+                    SELECT atttypmod 
+                    FROM pg_attribute 
+                    JOIN pg_class ON pg_class.oid = pg_attribute.attrelid
+                    JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+                    WHERE pg_class.relname = %s AND attname = 'embedding';
+                """, (self.table_name,))
+                col = cur.fetchone()
+
+                # If existing table was created with a different dimension (e.g. 384 from MiniLM), recreate it
+                if col and col[0] != self.embedding_dim:
+                    print(
+                        f"[VectorEngine] Existing table has dimension {col[0]}, "
+                        f"upgrading to {self.embedding_dim} for text-embedding-3-small..."
+                    )
+                    cur.execute(f"DROP TABLE IF EXISTS {self.table_name} CASCADE;")
+
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self.table_name} (
+                        id TEXT PRIMARY KEY,
+                        text TEXT NOT NULL,
+                        metadata JSONB,
+                        embedding vector({self.embedding_dim})
+                    );
+                    """
+                )
+                cur.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {self.table_name}_embedding_hnsw_idx
+                    ON {self.table_name} USING hnsw (embedding vector_cosine_ops);
+                    """
+                )
+            conn.commit()
+
+        print(f"[VectorEngine] Connected to Neon. Table '{self.table_name}' ({self.embedding_dim} dims) is ready.")
+
     def add_document(self, doc_id: str, text: str, metadata: Dict[str, Any]):
-        """Add a document chunk to the vector store"""
-        # Generate embedding
-        embedding = self.embedding_model.encode(text).tolist()
-        
-        # Add to collection
-        self.collection.add(
-            ids=[doc_id],
-            embeddings=[embedding],
-            documents=[text],
-            metadatas=[metadata]
-        )
-        
+        """Add or update a document chunk in the vector store"""
+        embedding = np.array(self._create_embedding(text), dtype=np.float32)
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.table_name} (id, text, metadata, embedding)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET text = EXCLUDED.text,
+                        metadata = EXCLUDED.metadata,
+                        embedding = EXCLUDED.embedding;
+                    """,
+                    (doc_id, text, Json(metadata), embedding)
+                )
+            conn.commit()
+
         self.last_updated = datetime.now()
-    
+
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant documents using semantic similarity"""
-        # Generate query embedding
-        query_embedding = self.embedding_model.encode(query).tolist()
-        
-        # Search in collection
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=limit,
-            include=["documents", "metadatas", "distances"]
-        )
-        
-        # Format results
+        """Search for relevant documents using cosine similarity"""
+        query_embedding = np.array(self._create_embedding(query), dtype=np.float32)
+
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        id,
+                        text,
+                        metadata,
+                        1 - (embedding <=> %s) AS score
+                    FROM {self.table_name}
+                    ORDER BY embedding <=> %s
+                    LIMIT %s;
+                    """,
+                    (query_embedding, query_embedding, limit)
+                )
+                rows = cur.fetchall()
+
         formatted_results = []
-        if results['ids'] and len(results['ids'][0]) > 0:
-            for i in range(len(results['ids'][0])):
-                formatted_results.append({
-                    'id': results['ids'][0][i],
-                    'text': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
-                    'score': 1 - results['distances'][0][i],  # Convert distance to similarity
-                    'title': results['metadatas'][0][i].get('title', 'Unknown'),
-                    'snippet': results['documents'][0][i][:150] + '...'
-                })
-        
+        for row in rows:
+            meta = row['metadata'] if row['metadata'] is not None else {}
+            score = float(row['score']) if row['score'] is not None else 0.0
+            formatted_results.append({
+                'id': row['id'],
+                'text': row['text'],
+                'metadata': meta,
+                'score': score,
+                'title': meta.get('title', 'Unknown'),
+                'snippet': row['text'][:150] + '...'
+            })
+
         return formatted_results
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics about the vector store"""
-        count = self.collection.count()
-        
-        # Count unique documents
-        all_metadata = self.collection.get()['metadatas']
-        unique_files = set()
-        if all_metadata:
-            for meta in all_metadata:
-                unique_files.add(meta.get('file', ''))
-        
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) AS total_chunks,
+                        COUNT(DISTINCT metadata->>'file') AS total_documents
+                    FROM {self.table_name};
+                    """
+                )
+                row = cur.fetchone()
+                total_chunks = row[0] if row else 0
+                total_documents = row[1] if row else 0
+
         return {
-            'total_chunks': count,
-            'total_documents': len(unique_files),
+            'total_chunks': total_chunks,
+            'total_documents': total_documents,
             'last_updated': self.last_updated.isoformat()
         }
-    
+
     def clear_collection(self):
         """Clear all documents from the collection"""
-        # Delete and recreate collection
-        self.client.delete_collection(self.collection.name)
-        self.collection = self.client.create_collection(
-            name=self.collection.name,
-            metadata={"hnsw:space": "cosine"}
-        )
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"TRUNCATE TABLE {self.table_name};")
+            conn.commit()
         self.last_updated = datetime.now()
-    
+
     def is_initialized(self) -> bool:
         """Check if the vector store has been initialized with documents"""
-        return self.collection.count() > 0
-    
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT EXISTS (SELECT 1 FROM {self.table_name} LIMIT 1);")
+                res = cur.fetchone()
+                return bool(res[0]) if res else False
+
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding for a text (useful for visualization)"""
-        return self.embedding_model.encode(text).tolist()
-    
+        return self._create_embedding(text)
+
     def get_visualization_data(self) -> Dict[str, Any]:
         """Get data for vector space visualization"""
-        # This is a simplified version - in practice, you'd use dimensionality reduction
         try:
-            # Get a sample of documents
-            sample = self.collection.get(limit=50, include=["embeddings", "metadatas"])
-            
-            if not sample['embeddings']:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT embedding, metadata
+                        FROM {self.table_name}
+                        LIMIT 50;
+                        """
+                    )
+                    rows = cur.fetchall()
+
+            if not rows:
                 return {"error": "No documents in collection"}
-            
-            # Simple 2D projection using first two dimensions
+
             points = []
-            for i, embedding in enumerate(sample['embeddings']):
+            for row in rows:
+                embedding = row['embedding']
+                meta = row['metadata'] or {}
                 points.append({
-                    'x': embedding[0],
-                    'y': embedding[1],
-                    'category': sample['metadatas'][i].get('category', 'unknown'),
-                    'title': sample['metadatas'][i].get('title', 'Unknown')
+                    'x': float(embedding[0]),
+                    'y': float(embedding[1]),
+                    'category': meta.get('category', 'unknown'),
+                    'title': meta.get('title', 'Unknown')
                 })
-            
+
             return {
                 'points': points,
                 'categories': list(set(p['category'] for p in points))

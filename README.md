@@ -19,16 +19,16 @@ This repo is that experiment: a small, readable RAG system I can inspect, break,
 
 The pipeline follows the three steps in `ChatEngine.get_response()`:
 
-1. **Retrieve** — The question is embedded with `sentence-transformers` (`all-MiniLM-L6-v2`) and queried against a persistent **ChromaDB** collection using cosine similarity. Top chunks are returned (limit 3) and de-duplicated by document title.
+1. **Retrieve** — The question is embedded via OpenRouter using OpenAI's `text-embedding-3-small` and queried against a **Neon PostgreSQL** database with the **pgvector** extension using cosine similarity (`<=>`). Top chunks are returned (limit 3) and de-duplicated by document title.
 2. **Augment** — Retrieved text is assembled into a context block and stuffed into the prompt: *“Based on the following context… answer the user’s question.”* If the context is empty or off-topic, the model is instructed to say so.
 3. **Generate** — Groq hosts the chat model. The reply is returned with source metadata and a simple confidence score (mean of retrieval similarity scores). If the LLM call fails, a fallback still surfaces the top retrieved excerpts.
 
-On first launch, `DocumentProcessor` walks `techcorp-docs/`, splits markdown into overlapping character chunks (~500 chars, 100 overlap, preferring sentence/paragraph breaks), and writes embeddings into `rag-assistant/chroma_db/`.
+On first launch, `DocumentProcessor` walks `techcorp-docs/`, splits markdown into overlapping character chunks (~500 chars, 100 overlap, preferring sentence/paragraph breaks), and stores embeddings directly in Neon (`techcorp_chunks` table).
 
 ```
 User question
     → embed query
-    → nearest chunks in ChromaDB
+    → nearest chunks in Neon (pgvector)
     → prompt = system + context + question
     → Groq completion
     → answer + source chips in the UI
@@ -59,13 +59,13 @@ company-rag/
 
 ## Setup
 
-1. Copy environment variables and add a Groq key:
+1. Copy environment variables and configure keys:
 
    ```bash
    cp .env.example .env
    ```
 
-   Set `GROQ_API_KEY` and `ALLOWED_MODELS` (comma-separated Groq model ids). The chat engine currently uses the **second** model in that list.
+   Set `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `ALLOWED_MODELS`, and your Neon `DATABASE_URL` (e.g. `postgresql://user:password@ep-xxxx.neon.tech/neondb?sslmode=require`).
 
 2. Create a virtualenv and install dependencies (from the repo root):
 
@@ -82,17 +82,17 @@ company-rag/
    python app.py
    ```
 
-   First run downloads the embedding model (~90MB) and indexes `techcorp-docs/`. Open [http://127.0.0.1:5252](http://127.0.0.1:5252).
+   First run generates embeddings via OpenRouter and indexes `techcorp-docs/` into Neon with `pgvector`. Open [http://127.0.0.1:5252](http://127.0.0.1:5252).
 
-`.env` and `chroma_db/` are gitignored so keys and local vectors stay off the repo.
+`.env` is gitignored so credentials and database connection strings stay off the repo.
 
 ## Run with Docker
 
-The Docker image includes the Flask app, `techcorp-docs/`, Python dependencies, and the baked-in MiniLM embedding model (`all-MiniLM-L6-v2`). Groq credentials stay out of the image — pass them at run time.
+The Docker image is lightweight (~120 MB) and includes the Flask app, `techcorp-docs/`, and Python dependencies. All ML compute runs via cloud APIs (Groq for chat, OpenRouter for embeddings, and Neon for vectors), requiring minimal RAM (<100 MB), perfect for deployment on free tiers like Render.
 
 ### Option 1: Pull from GitHub Container Registry (Quickest)
 
-You can run the pre-built image directly without cloning the repository or waiting for PyTorch/dependencies to build.
+You can run the pre-built image directly without cloning the repository or waiting for dependencies to build.
 
 1. **Pull the image from GHCR:**
 
@@ -102,13 +102,12 @@ You can run the pre-built image directly without cloning the repository or waiti
    
 2. **Run the container:**
 
-   Pass your Groq API key via `-e` or `--env-file .env`:
+   Pass your environment variables via `--env-file .env`:
 
    ```bash
    docker run --rm --name techcorp-rag \
      -p 5252:5252 \
-     -e GROQ_API_KEY="your_groq_api_key_here" \
-     -v techcorp-chroma:/app/rag-assistant/chroma_db \
+     --env-file .env \
      ghcr.io/stormgear/techcorp-rag:v0
    ```
 
@@ -116,7 +115,7 @@ You can run the pre-built image directly without cloning the repository or waiti
 
 3. **Access the assistant:**
 
-   Open [http://127.0.0.1:5252](http://127.0.0.1:5252) in your browser. The named volume (`techcorp-chroma`) preserves the ChromaDB index between runs.
+   Open [http://127.0.0.1:5252](http://127.0.0.1:5252) in your browser. All vector storage lives in your Neon database, so no local volume mounts are needed!
 
 ---
 
@@ -136,7 +135,7 @@ If you want to modify code or docs and test local changes:
    docker build -t techcorp-rag:local .
    ```
 
-   The first build is slower because it installs PyTorch/sentence-transformers and bakes `all-MiniLM-L6-v2` into the image layer.
+   The build is very fast and lightweight since no heavy ML frameworks (like PyTorch) are needed.
 
 3. Run the container:
 
@@ -171,7 +170,7 @@ Answers should stay grounded in the markdown files. If you add a document, clear
 
 - **Chunking is a product decision, not just a preprocessing step.** Too-small chunks lose policy context; too-large chunks dilute similarity. Overlap exists so a sentence that straddles a cut still appears in a retrieved window.
 - **Retrieval quality gates generation.** A fluent model will still hallucinate if the wrong (or empty) chunks are in the prompt. Source chips made that visible: I could see *which* files the answer leaned on.
-- **Embeddings are just vectors; the index is the memory.** ChromaDB persistence meant I did not re-embed on every restart, which made the “index vs. query” split obvious.
+- **Embeddings are just vectors; the index is the memory.** Storing embeddings in Neon with pgvector allows persistence and fast vector similarity search without managing local database files or container volumes.
 - **The prompt is the glue.** The system prompt defines the assistant’s job; the augmented user prompt is where retrieved documents actually enter the model. Separating those two made RAG feel less like magic.
 - **Fallbacks matter.** When the API is down, returning retrieved excerpts is more honest than a generic error — the retrieval half of RAG still has value on its own.
 

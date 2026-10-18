@@ -6,8 +6,3 @@ services:
       - "5252:5252"
     env_file:
       - .env
-    volumes:
-      - chroma-data:/app/rag-assistant/chroma_db
-
-volumes:
-  chroma-data:
